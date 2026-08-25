@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Derive version from tag
+        run: echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Set project version
+        run: >
+          mvn -B org.codehaus.mojo:versions-maven-plugin:2.16.2:set
+          -DnewVersion="$VERSION" -DgenerateBackupPoms=false
+
+      - name: Build and test
+        run: mvn -B verify
+
+      - name: Attach jar to release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >
+          gh release upload "$TAG"
+          "target/keycloak-bohemia-gameaccount-$VERSION.jar" --clobber
+
+      - name: Build and push container image
+        env:
+          REPOSITORY: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          IMAGE="ghcr.io/$(echo "$REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker build -t "$IMAGE:$VERSION" .
+          docker push "$IMAGE:$VERSION"
+          if [ "$PRERELEASE" != "true" ]; then
+            docker tag "$IMAGE:$VERSION" "$IMAGE:latest"
+            docker push "$IMAGE:latest"
+          fi

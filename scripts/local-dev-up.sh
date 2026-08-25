@@ -70,19 +70,13 @@ echo "=== bootstrap realm/client/user via Admin API ==="
 TOKEN=$(admin_token)
 AUTH="Authorization: Bearer $TOKEN"
 
-# loginTheme must be our custom "eliferpg-reforger" theme (packaged by the
-# Dockerfile at /opt/keycloak/themes/eliferpg-reforger) -- without it the
-# required-action page 500s with TemplateNotFoundException, since the default
-# theme has no link-bohemia-gameaccount.ftl. See scripts/integration-test.sh
-# for how this was empirically diagnosed.
-#
-# Production instead uses loginTheme=eliferpg, the styled theme from the
-# separate keycloak-theme-eliferpg repo, which sets parent=eliferpg-reforger
-# on its own login theme so it inherits this page. That repo isn't available
-# here, so local dev/integration testing targets this plugin's own bare
-# fallback theme directly.
+# No loginTheme override needed: link-bohemia-gameaccount.ftl ships under
+# theme-resources/templates in this jar, which Keycloak's ClasspathThemeResource-
+# ProviderFactory makes available to whatever theme is active -- including the
+# realm's default here. Production separately deploys keycloak-theme-eliferpg
+# and sets loginTheme=eliferpg for the styled look; this page renders under either.
 curl -s -X POST "$BASE/admin/realms" -H "$AUTH" -H "Content-Type: application/json" \
-  -d "{\"realm\":\"$REALM\",\"enabled\":true,\"loginTheme\":\"eliferpg-reforger\"}"
+  -d "{\"realm\":\"$REALM\",\"enabled\":true}"
 
 # Register before enabling -- PUT alone 404s until this runs once per realm.
 curl -s -X POST "$BASE/admin/realms/$REALM/authentication/register-required-action" \

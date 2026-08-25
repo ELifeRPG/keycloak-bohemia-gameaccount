@@ -48,7 +48,9 @@ COPY keycloak-bohemia-gameaccount-<version>.jar /opt/keycloak/providers/
 ```
 
 The jar is all that is needed: it registers both providers via `META-INF/services`, and
-ships the `eliferpg-reforger` login theme inside itself via `META-INF/keycloak-themes.json`.
+ships `link-bohemia-gameaccount.ftl` under `theme-resources/templates` — Keycloak's
+`ClasspathThemeResourceProviderFactory` makes it available to whatever login theme a
+realm uses, no `loginTheme` configuration required.
 
 Then configure the realm — see [Realm configuration](#realm-configuration).
 
@@ -68,20 +70,15 @@ They are declared as `LinkBohemiaGameAccountRequiredActionFactory.PROVIDER_ID` a
 
 ## Realm configuration
 
-**1. `loginTheme` must resolve `link-bohemia-gameaccount.ftl`.** Otherwise the challenge
-page fails with `freemarker.template.TemplateNotFoundException` (HTTP 500) — Keycloak's
-default theme has no such template.
-
-This jar packages a bare theme, **`eliferpg-reforger`** (`parent=keycloak`), carrying only
-that template. Set `loginTheme=eliferpg-reforger` for a standalone deploy of this plugin
-alone.
-
-For a styled deployment, the separate `keycloak-theme-eliferpg` repo registers a theme
-named **`eliferpg`** whose `parent=eliferpg-reforger`; with both jars deployed,
-`loginTheme=eliferpg` renders every page styled and still resolves this template through
-the parent chain. The two theme names must differ — Keycloak resolves a theme by
-`(name, type)` to a single provider, so identically named `login` themes hide one another
-rather than merging.
+**1. No `loginTheme` configuration is required.** `link-bohemia-gameaccount.ftl` ships
+under `theme-resources/templates` in this jar (see "Installing" above), which Keycloak
+makes available to whatever theme is active for the realm — the default theme, this
+plugin deployed alone, or a styled theme like the separate `keycloak-theme-eliferpg`
+repo's `eliferpg`, all render it correctly with zero coordination between jars. This
+is also how multiple SPI plugins with their own UI can coexist: each just ships its
+own `theme-resources/` tree, since Keycloak searches every registered
+`ThemeResourceProvider` rather than requiring them to chain through a single
+`parent=` (which only supports one theme at a time).
 
 **2. Registering the required action takes two Admin API calls, in order.**
 
@@ -205,9 +202,9 @@ docker run --rm -v "$(pwd)":/app -w /app \
 ```
 
 `mvn package` produces `target/keycloak-bohemia-gameaccount-<version>.jar`; the
-`Dockerfile` layers that plus the `eliferpg-reforger` theme onto
-`quay.io/keycloak/keycloak:26.0`. The tag above is local-only — the published image lives
-at `ghcr.io/eliferpg/keycloak-bohemia-gameaccount`.
+`Dockerfile` layers that onto `quay.io/keycloak/keycloak:26.0`. The tag above is
+local-only — the published image lives at
+`ghcr.io/eliferpg/keycloak-bohemia-gameaccount`.
 
 CI runs `mvn -B verify` on every push and pull request. Publishing a GitHub Release builds
 the plugin at that tag's version — tag `v0.2.0` yields

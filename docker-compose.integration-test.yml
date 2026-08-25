@@ -1,0 +1,15 @@
+services:
+  keycloak:
+    image: eliferpg/keycloak-bohemia-gameaccount:dev
+    ports:
+      - "18082:8080"
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    # Match the real eliferpg realm's Keycloak flags. backend/compose.yml runs
+    # `--features=token-exchange,admin-fine-grained-authz`, and the Bridge's
+    # player-token path depends on it (reforger-bridge BridgeTokenProvider does a
+    # classic `requested_subject` impersonation exchange). Without these flags
+    # this stack silently diverges from the realm this provider actually ships
+    # into, so anything touching token exchange can't be reproduced here.
+    command: start-dev --features=token-exchange,admin-fine-grained-authz

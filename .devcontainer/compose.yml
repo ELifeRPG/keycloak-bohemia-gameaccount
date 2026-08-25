@@ -1,0 +1,27 @@
+services:
+  workspace:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: "sleep infinity"
+    # Sibling containers started via docker-outside-of-docker (e.g. by
+    # compose.yml or docker-compose.integration-test.yml) publish their ports
+    # on the *host's* real network, not this container's -- localhost here
+    # never reaches them (confirmed directly: curl localhost:<port> from
+    # inside this container fails even though the port is genuinely bound on
+    # the host). host.docker.internal is the portable way to reach the host
+    # from in here; Docker Desktop adds it automatically, plain Docker Engine
+    # (this repo's actual setup) does not, hence this explicit entry.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - "../:/workspace:cached"
+      - "${HOME}/.gitconfig:/home/vscode/.gitconfig:ro"
+      # This repo's own build/packaging (Dockerfile, docker-compose.integration-test.yml)
+      # runs `docker`/`docker compose` against the *host's* Docker daemon rather than
+      # nesting a daemon inside the devcontainer (docker-outside-of-docker, wired up by
+      # the docker-outside-of-docker feature in devcontainer.json) — unlike this
+      # workspace's other devcontainers, none of which need Docker access at all, this
+      # one does because packaging and testing this project fundamentally means
+      # building and running the Keycloak image it produces.
+      - "/var/run/docker.sock:/var/run/docker.sock"

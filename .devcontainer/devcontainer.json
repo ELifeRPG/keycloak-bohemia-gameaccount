@@ -1,0 +1,26 @@
+{
+  "name": "Workstation",
+  "dockerComposeFile": [
+    "compose.yml",
+    "compose.override.local.yml"
+  ],
+  "service": "workspace",
+  "workspaceFolder": "/workspace",
+  "initializeCommand": "bash .devcontainer/initialize.sh",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+      "moby": false
+    }
+  },
+  "postStartCommand": "sh /workspace/.devcontainer/start-port-proxies.sh",
+  "forwardPorts": [18080, 18082],
+  "portsAttributes": {
+    "18080": {
+      "label": "keycloak (compose.yml / local-dev-up.sh)"
+    },
+    "18082": {
+      "label": "keycloak (docker-compose.integration-test.yml)"
+    }
+  },
+  "shutdownAction": "stopCompose"
+}

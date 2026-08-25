@@ -1,0 +1,6 @@
+.superpowers/
+.serena/
+target/
+*.class
+.idea/
+*.iml

@@ -34,13 +34,9 @@ Steps 1 and 2 can be days apart. Nothing links them until step 4.
 ## Installing
 
 Every [release](https://github.com/ELifeRPG/keycloak-bohemia-gameaccount/releases/latest)
-publishes both a jar and a container image. Either use the image:
-
-```dockerfile
-FROM ghcr.io/eliferpg/keycloak-bohemia-gameaccount:<tag>
-```
-
-…or layer the jar onto a Keycloak image yourself:
+attaches the jar. ELifeRPG runs it through
+[`ghcr.io/eliferpg/keycloak`](https://github.com/ELifeRPG/keycloak), which bakes in the latest
+release of this and the theme plugin. To layer it onto a Keycloak image yourself:
 
 ```dockerfile
 FROM quay.io/keycloak/keycloak:26.0
@@ -202,15 +198,13 @@ docker run --rm -v "$(pwd)":/app -w /app \
 ```
 
 `mvn package` produces `target/keycloak-bohemia-gameaccount-<version>.jar`; the
-`Dockerfile` layers that onto `quay.io/keycloak/keycloak:26.0`. The tag above is
-local-only — the published image lives at
-`ghcr.io/eliferpg/keycloak-bohemia-gameaccount`.
+`Dockerfile` layers that onto `quay.io/keycloak/keycloak:26.0` for local testing; it is
+not published.
 
 CI runs `mvn -B verify` on every push and pull request. Publishing a GitHub Release builds
 the plugin at that tag's version — tag `v0.2.0` yields
-`keycloak-bohemia-gameaccount-0.2.0.jar` — attaches the jar to the release, and pushes the
-image as `ghcr.io/eliferpg/keycloak-bohemia-gameaccount:0.2.0`. A release not marked as a
-prerelease also moves the `:latest` tag.
+`keycloak-bohemia-gameaccount-0.2.0.jar` — and attaches the jar to the release. Renovate in
+[ELifeRPG/keycloak](https://github.com/ELifeRPG/keycloak) picks the new release up from there.
 
 ## Testing
 

@@ -9,7 +9,7 @@
                     <label for="pin" class="${properties.kcLabelClass!}">${msg("linkBohemiaGameAccountPinLabel")}</label>
                 </div>
                 <div class="${properties.kcInputWrapperClass!}">
-                    <input type="text" id="pin" name="pin" class="${properties.kcInputClass!}"
+                    <input type="text" id="pin" name="pin" class="${properties.kcInputClass!}" value="${pin!''}"
                            autofocus autocomplete="off" maxlength="32" />
                 </div>
             </div>

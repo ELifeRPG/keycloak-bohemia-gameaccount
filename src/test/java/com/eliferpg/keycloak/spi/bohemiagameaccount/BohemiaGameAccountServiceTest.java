@@ -8,6 +8,7 @@ import org.keycloak.models.SingleUseObjectProvider;
 import org.keycloak.models.UserModel;
 import org.keycloak.models.UserProvider;
 
+import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
@@ -16,6 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -46,21 +48,27 @@ class BohemiaGameAccountServiceTest {
         return user;
     }
 
+    /** Stands in for the user's current multi-valued attribute. */
+    private void holds(UserModel user, String... gameIdentityIds) {
+        when(user.getAttributeStream(BohemiaGameAccountService.GAME_IDENTITY_IDS_ATTRIBUTE))
+            .thenAnswer(invocation -> Stream.of(gameIdentityIds));
+    }
+
     private void noExistingHolder() {
         when(userProvider.searchForUserByUserAttributeStream(any(), anyString(), anyString()))
             .thenReturn(Stream.empty());
     }
 
     @Test
-    void mintPin_storesBohemiaIdInSingleUseObjectsWithTtl() {
-        String pin = service.mintPin(session, "BOHEMIA-1");
+    void mintPin_storesTheGameIdentityIdInSingleUseObjectsWithTtl() {
+        String pin = service.mintPin(session, "GI-PC");
 
         assertNotNull(pin);
         assertEquals(8, pin.length());
         verify(singleUseObjects).put(
             eq(BohemiaGameAccountService.SINGLE_USE_PREFIX + pin),
             eq(BohemiaGameAccountService.PIN_TTL_SECONDS),
-            eq(Map.of(BohemiaGameAccountService.BOHEMIA_ID_NOTE, "BOHEMIA-1")));
+            eq(Map.of(BohemiaGameAccountService.GAME_IDENTITY_ID_NOTE, "GI-PC")));
     }
 
     @Test
@@ -77,9 +85,9 @@ class BohemiaGameAccountServiceTest {
      * two concurrent redemptions of the same PIN safe -- exactly one gets a non-null map.
      */
     @Test
-    void consumePin_removesExactlyOnceAndReturnsBohemiaId() {
+    void consumePin_removesExactlyOnceAndReturnsTheGameIdentityId() {
         when(singleUseObjects.remove(BohemiaGameAccountService.SINGLE_USE_PREFIX + "ABCD2345"))
-            .thenReturn(Map.of(BohemiaGameAccountService.BOHEMIA_ID_NOTE, "BOHEMIA-9"));
+            .thenReturn(Map.of(BohemiaGameAccountService.GAME_IDENTITY_ID_NOTE, "BOHEMIA-9"));
 
         assertEquals("BOHEMIA-9", service.consumePin(session, "ABCD2345"));
 
@@ -105,80 +113,139 @@ class BohemiaGameAccountServiceTest {
     @Test
     void consumePin_trimsSurroundingWhitespace() {
         when(singleUseObjects.remove(BohemiaGameAccountService.SINGLE_USE_PREFIX + "ABCD2345"))
-            .thenReturn(Map.of(BohemiaGameAccountService.BOHEMIA_ID_NOTE, "B1"));
+            .thenReturn(Map.of(BohemiaGameAccountService.GAME_IDENTITY_ID_NOTE, "B1"));
         assertEquals("B1", service.consumePin(session, "  ABCD2345  "));
     }
 
     @Test
-    void bind_writesAttributeOnTheAuthenticatedUser() {
+    void bind_firstIdentity_writesItAsASingleValuedList() {
         UserModel user = mockUser("user-1");
+        holds(user);
         noExistingHolder();
 
-        assertEquals(LinkOutcome.LINKED, service.bind(session, realm, user, "BOHEMIA-1"));
+        assertEquals(LinkOutcome.LINKED, service.bind(session, realm, user, "GI-PC"));
 
-        verify(user).setSingleAttribute(BohemiaGameAccountService.BOHEMIA_ID_ATTRIBUTE, "BOHEMIA-1");
+        verify(user).setAttribute(BohemiaGameAccountService.GAME_IDENTITY_IDS_ATTRIBUTE, List.of("GI-PC"));
+    }
+
+    /**
+     * The central behaviour change. A player who links their Xbox identity to the account already
+     * holding their PC identity must end up with both -- Reforger mints one Game Identity per
+     * game-platform combination, so this is the ordinary case, not a conflict.
+     */
+    @Test
+    void bind_secondIdentityOnTheSameUser_appendsRatherThanReplacing() {
+        UserModel user = mockUser("user-1");
+        holds(user, "GI-PC");
+        noExistingHolder();
+
+        assertEquals(LinkOutcome.LINKED, service.bind(session, realm, user, "GI-XBOX"));
+
+        verify(user).setAttribute(
+            BohemiaGameAccountService.GAME_IDENTITY_IDS_ATTRIBUTE, List.of("GI-PC", "GI-XBOX"));
     }
 
     @Test
-    void bind_sameBohemiaIdAlreadyOnThisUser_isAlreadyLinkedAndDoesNotRewrite() {
+    void bind_thirdIdentity_keepsAllPreviousOnes() {
         UserModel user = mockUser("user-1");
-        when(user.getFirstAttribute(BohemiaGameAccountService.BOHEMIA_ID_ATTRIBUTE)).thenReturn("BOHEMIA-1");
+        holds(user, "GI-PC", "GI-XBOX");
+        noExistingHolder();
 
-        assertEquals(LinkOutcome.ALREADY_LINKED, service.bind(session, realm, user, "BOHEMIA-1"));
+        assertEquals(LinkOutcome.LINKED, service.bind(session, realm, user, "GI-PSN"));
 
-        verify(user, never()).setSingleAttribute(anyString(), anyString());
+        verify(user).setAttribute(
+            BohemiaGameAccountService.GAME_IDENTITY_IDS_ATTRIBUTE, List.of("GI-PC", "GI-XBOX", "GI-PSN"));
     }
 
     @Test
-    void bind_userAlreadyBoundToDifferentBohemiaId_conflictsWithoutWriting() {
+    void bind_identityAlreadyOnThisUser_isAlreadyLinkedAndDoesNotRewrite() {
         UserModel user = mockUser("user-1");
-        when(user.getFirstAttribute(BohemiaGameAccountService.BOHEMIA_ID_ATTRIBUTE)).thenReturn("BOHEMIA-OTHER");
+        holds(user, "GI-PC", "GI-XBOX");
 
-        assertEquals(LinkOutcome.CONFLICT, service.bind(session, realm, user, "BOHEMIA-1"));
+        assertEquals(LinkOutcome.ALREADY_LINKED, service.bind(session, realm, user, "GI-XBOX"));
 
-        verify(user, never()).setSingleAttribute(anyString(), anyString());
+        verify(user, never()).setAttribute(anyString(), anyList());
+    }
+
+    /** A blank value would be projected into the claim, so it must not survive an append. */
+    @Test
+    void bind_dropsBlankValuesAlreadyOnTheAttribute() {
+        UserModel user = mockUser("user-1");
+        holds(user, "GI-PC", "   ");
+        noExistingHolder();
+
+        assertEquals(LinkOutcome.LINKED, service.bind(session, realm, user, "GI-XBOX"));
+
+        verify(user).setAttribute(
+            BohemiaGameAccountService.GAME_IDENTITY_IDS_ATTRIBUTE, List.of("GI-PC", "GI-XBOX"));
     }
 
     /**
      * Keycloak does not enforce this for us -- verified against a live 26.0.8 instance,
      * a duplicate binding is accepted at write time and only fails later on read. So this
-     * check is the only thing preventing it.
+     * check is the only thing preventing one game identity reaching two accounts.
      */
     @Test
-    void bind_bohemiaIdHeldByAnotherUser_conflictsWithoutWriting() {
+    void bind_identityHeldByAnotherUser_conflictsWithoutWriting() {
         UserModel user = mockUser("user-1");
         UserModel holder = mockUser("user-2");
+        holds(user);
         when(userProvider.searchForUserByUserAttributeStream(
-            realm, BohemiaGameAccountService.BOHEMIA_ID_ATTRIBUTE, "BOHEMIA-1"))
+            realm, BohemiaGameAccountService.GAME_IDENTITY_IDS_ATTRIBUTE, "GI-PC"))
             .thenReturn(Stream.of(holder));
 
-        assertEquals(LinkOutcome.CONFLICT, service.bind(session, realm, user, "BOHEMIA-1"));
+        assertEquals(LinkOutcome.CONFLICT, service.bind(session, realm, user, "GI-PC"));
 
-        verify(user, never()).setSingleAttribute(anyString(), anyString());
+        verify(user, never()).setAttribute(anyString(), anyList());
     }
 
     @Test
     void bind_storageThrows_returnsErrorRatherThanPropagating() {
         UserModel user = mockUser("user-1");
+        holds(user);
         noExistingHolder();
-        doThrow(new RuntimeException("boom")).when(user).setSingleAttribute(anyString(), anyString());
+        doThrow(new RuntimeException("boom")).when(user).setAttribute(anyString(), anyList());
 
-        assertEquals(LinkOutcome.ERROR, service.bind(session, realm, user, "BOHEMIA-1"));
+        assertEquals(LinkOutcome.ERROR, service.bind(session, realm, user, "GI-PC"));
     }
 
     @Test
-    void findByBohemiaId_returnsNullWhenUnbound() {
+    void findByGameIdentityId_returnsNullWhenUnheld() {
         noExistingHolder();
-        assertNull(service.findByBohemiaId(session, realm, "BOHEMIA-1"));
+        assertNull(service.findByGameIdentityId(session, realm, "GI-PC"));
     }
 
     @Test
-    void findByBohemiaId_returnsTheBoundUser() {
+    void findByGameIdentityId_returnsTheHoldingUser() {
         UserModel holder = mockUser("user-2");
         when(userProvider.searchForUserByUserAttributeStream(
-            realm, BohemiaGameAccountService.BOHEMIA_ID_ATTRIBUTE, "BOHEMIA-1"))
+            realm, BohemiaGameAccountService.GAME_IDENTITY_IDS_ATTRIBUTE, "GI-PC"))
             .thenReturn(Stream.of(holder));
 
-        assertEquals(holder, service.findByBohemiaId(session, realm, "BOHEMIA-1"));
+        assertEquals(holder, service.findByGameIdentityId(session, realm, "GI-PC"));
+    }
+
+    /**
+     * The attribute name is shared verbatim with the realm's {@code game-identity} client scope,
+     * whose mapper projects it into the {@code game_identity_ids} claim the backend reads. Renaming
+     * it here without the realm silently empties that claim for every player, so pin it.
+     */
+    @Test
+    void attributeNameIsTheOneTheRealmMapperReads() {
+        assertEquals("gameIdentityIds", BohemiaGameAccountService.GAME_IDENTITY_IDS_ATTRIBUTE);
+    }
+
+    /**
+     * The upgrade canary. Mint and consume are normally the same deployment but never the same
+     * instant: a PIN minted just before a rolling upgrade is consumed by the new pod. Changing this
+     * key invalidates every PIN in flight, so it has to be a deliberate act.
+     */
+    @Test
+    void singleUseNoteKeyIsStableAcrossUpgrades() {
+        assertEquals("gameIdentityId", BohemiaGameAccountService.GAME_IDENTITY_ID_NOTE);
+
+        service.mintPin(session, "GI-PC");
+
+        verify(singleUseObjects).put(anyString(), anyLong(), eq(Map.of("gameIdentityId", "GI-PC")));
     }
 }

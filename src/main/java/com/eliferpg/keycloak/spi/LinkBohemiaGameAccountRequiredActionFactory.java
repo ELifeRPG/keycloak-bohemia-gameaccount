@@ -44,6 +44,6 @@ public class LinkBohemiaGameAccountRequiredActionFactory implements RequiredActi
 
     @Override
     public String getDisplayText() {
-        return "Link Bohemia Game Account";
+        return "Link Game Account";
     }
 }

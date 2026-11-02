@@ -110,8 +110,8 @@ curl -s -X POST "$BASE/admin/realms/$REALM/clients" -H "$AUTH" -H "Content-Type:
   -d '{"clientId":"test-client","publicClient":true,"standardFlowEnabled":true,"redirectUris":["http://localhost/*"]}'
 
 # Keycloak 26's declarative User Profile hides attributes outside its declared
-# schema from Admin REST API reads. The SPI writes `bohemiaId` through
-# UserModel.setSingleAttribute, which bypasses User Profile and works
+# schema from Admin REST API reads. The SPI writes `gameIdentityIds` through
+# UserModel.setAttribute, which bypasses User Profile and works
 # regardless -- but the success assertion below reads the attribute back over
 # the Admin API to prove the binding persisted, and that read needs ADMIN_EDIT.
 # Same pattern as scripts/local-dev-up.sh.
@@ -129,13 +129,33 @@ curl -s -X POST "$BASE/admin/realms/$REALM/client-scopes" -H "$AUTH" -H "Content
 curl -s -X POST "$BASE/admin/realms/$REALM/clients" -H "$AUTH" -H "Content-Type: application/json" \
   -d "{\"clientId\":\"trusted-minter\",\"publicClient\":false,\"secret\":\"$TRUSTED_SECRET\",\"serviceAccountsEnabled\":true,\"standardFlowEnabled\":false,\"defaultClientScopes\":[\"$TRUSTED_SCOPE\"]}"
 
+persisted_identities() {
+  # Prints the user's gameIdentityIds attribute as a comma-separated list.
+  curl -s "$BASE/admin/realms/$REALM/users?username=$1&exact=true" -H "$AUTH" \
+    | python3 -c "import sys,json;u=json.load(sys.stdin)[0];print(','.join((u.get('attributes') or {}).get('gameIdentityIds',[])))"
+}
+
+mint_pin_status() {
+  # Prints the HTTP status of a mint attempt. Used to prove the uniqueness
+  # lookup finds a user by a given identity -- 409 means "already held".
+  local token
+  token=$(trusted_token)
+  curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/realms/$REALM/bohemia-gameaccount/pin" \
+    -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+    -d "{\"bohemiaId\":\"$1\"}"
+}
+
+trusted_token() {
+  curl -s -X POST "$BASE/realms/$REALM/protocol/openid-connect/token" \
+    -d "grant_type=client_credentials&client_id=trusted-minter&client_secret=$TRUSTED_SECRET" \
+    | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])"
+}
+
 mint_pin() {
-  # Mints a PIN through the real endpoint as the trusted caller. $1=bohemiaId.
+  # Mints a PIN through the real endpoint as the trusted caller. $1=Game Identity ID.
   local bohemia_id="$1"
   local token
-  token=$(curl -s -X POST "$BASE/realms/$REALM/protocol/openid-connect/token" \
-    -d "grant_type=client_credentials&client_id=trusted-minter&client_secret=$TRUSTED_SECRET" \
-    | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
+  token=$(trusted_token)
   curl -s -X POST "$BASE/realms/$REALM/bohemia-gameaccount/pin" \
     -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
     -d "{\"bohemiaId\":\"$bohemia_id\"}" \
@@ -143,9 +163,21 @@ mint_pin() {
 }
 
 echo "=== mint PINs via the real trusted endpoint ==="
-SUCCESS_BOHEMIA_ID="BOHEMIA-SUCCESS-001"
-SUCCESS_PIN=$(mint_pin "$SUCCESS_BOHEMIA_ID")
-echo "minted PIN for $SUCCESS_BOHEMIA_ID: $SUCCESS_PIN"
+# Named after the platform each identity stands for: Reforger mints one Game
+# Identity per game-platform combination, and the point of these cases is that
+# one player holds several at once.
+PC_IDENTITY="GI-PC-001"
+PC_PIN=$(mint_pin "$PC_IDENTITY")
+echo "minted PIN for $PC_IDENTITY: $PC_PIN"
+
+XBOX_IDENTITY="GI-XBOX-001"
+XBOX_PIN=$(mint_pin "$XBOX_IDENTITY")
+PSN_IDENTITY="GI-PSN-001"
+PSN_PIN=$(mint_pin "$PSN_IDENTITY")
+echo "minted PINs for $XBOX_IDENTITY / $PSN_IDENTITY: $XBOX_PIN / $PSN_PIN"
+
+PREFILL_IDENTITY="GI-PREFILL-001"
+PREFILL_PIN=$(mint_pin "$PREFILL_IDENTITY")
 
 # Conflict case: a second bohemiaId that is already bound to another user, so
 # binding it again must be refused rather than silently duplicated. Keycloak
@@ -154,10 +186,10 @@ echo "minted PIN for $SUCCESS_BOHEMIA_ID: $SUCCESS_PIN"
 # Both PINs must be minted BEFORE either is redeemed: once a bohemiaId is
 # bound, POST /pin refuses to mint for it again (409), which is itself the
 # first line of defence against double-binding.
-CONFLICT_BOHEMIA_ID="BOHEMIA-CONFLICT-001"
-CONFLICT_PIN=$(mint_pin "$CONFLICT_BOHEMIA_ID")
-CONFLICT_PIN_2=$(mint_pin "$CONFLICT_BOHEMIA_ID")
-echo "minted PINs for $CONFLICT_BOHEMIA_ID: $CONFLICT_PIN / $CONFLICT_PIN_2"
+CONFLICT_IDENTITY="GI-CONFLICT-001"
+CONFLICT_PIN=$(mint_pin "$CONFLICT_IDENTITY")
+CONFLICT_PIN_2=$(mint_pin "$CONFLICT_IDENTITY")
+echo "minted PINs for $CONFLICT_IDENTITY: $CONFLICT_PIN / $CONFLICT_PIN_2"
 
 # A PIN that was never minted is simply invalid. Note that an EXPIRED PIN is
 # now indistinguishable from an invalid one: PINs live in SingleUseObjects, so
@@ -170,9 +202,10 @@ run_case() {
   # $4 (expected_message), if set, is the substring expected in the rendered
   # kc-feedback-text span (the failure cases). If empty, the case is expected
   # to succeed and leave the action page entirely (no /tmp/step3.html at all).
-  # $5 (expect_bohemia_id), if set, is asserted to be the bohemiaId attribute
-  # actually persisted on the user afterwards -- the real proof the bind stuck.
-  local label="$1" username="$2" pin="$3" expected_message="${4:-}" expect_bohemia_id="${5:-}"
+  # $5 (expect_identities), if set, is the comma-separated list of Game Identity
+  # IDs asserted to be on the user afterwards, in order -- the real proof the
+  # bind stuck, and for the append cases the proof it did not replace.
+  local label="$1" username="$2" pin="$3" expected_message="${4:-}" expect_identities="${5:-}"
   local slug="${label//[^A-Za-z0-9]/_}"
   echo "=== case: $label (pin=$pin) ==="
   rm -f "$COOKIES" /tmp/step1.html /tmp/step2.html /tmp/step3.html
@@ -243,21 +276,78 @@ run_case() {
 
   # The real assertion for a successful bind: the attribute is actually on the
   # user afterwards. Rendering alone proves nothing persisted.
-  if [ -n "$expect_bohemia_id" ]; then
+  if [ -n "$expect_identities" ]; then
     local actual
-    actual=$(curl -s "$BASE/admin/realms/$REALM/users?username=$username&exact=true" -H "$AUTH" \
-      | python3 -c "import sys,json;u=json.load(sys.stdin)[0];print((u.get('attributes') or {}).get('bohemiaId',[''])[0])")
-    if [ "$actual" != "$expect_bohemia_id" ]; then
-      echo "FAIL: $label expected persisted bohemiaId '$expect_bohemia_id', got '$actual'"
+    actual=$(persisted_identities "$username")
+    if [ "$actual" != "$expect_identities" ]; then
+      echo "FAIL: $label expected persisted identities '$expect_identities', got '$actual'"
       exit 1
     fi
-    echo "persisted bohemiaId=$actual"
+    echo "persisted gameIdentityIds=$actual"
   fi
   echo "PASS: $label"
   echo
 }
 
-run_case "success" "player-success" "$SUCCESS_PIN" "" "$SUCCESS_BOHEMIA_ID"
+# A prefill case runs the same flow but puts the PIN on the auth URL as the
+# backend's linkUrl does, and asserts the rendered form came back with it
+# already in the field -- the whole reason that URL carries one.
+run_prefill_case() {
+  local label="$1" username="$2" pin="$3"
+  echo "=== case: $label (link_pin=$pin) ==="
+  rm -f "$COOKIES" /tmp/step1.html /tmp/step2.html
+
+  curl -s -X POST "$BASE/admin/realms/$REALM/users" -H "$AUTH" -H "Content-Type: application/json" \
+    -d "{\"username\":\"$username\",\"enabled\":true,\"emailVerified\":true,\"email\":\"$username@example.test\",\"firstName\":\"Test\",\"lastName\":\"User\",\"credentials\":[{\"type\":\"password\",\"value\":\"pass1234\",\"temporary\":false}]}"
+
+  curl -s -c "$COOKIES" -L \
+    "$BASE/realms/$REALM/protocol/openid-connect/auth?client_id=test-client&response_type=code&scope=openid&redirect_uri=http://localhost/callback&kc_action=link-bohemia-gameaccount&link_pin=$pin" \
+    -o /tmp/step1.html -w "GET /auth -> %{http_code}\n"
+
+  local login_action
+  login_action=$(extract_form_action /tmp/step1.html)
+  curl -s -c "$COOKIES" -b "$COOKIES" -L "$login_action" \
+    --data-urlencode "username=$username" --data-urlencode "password=pass1234" \
+    -o /tmp/step2.html -w "POST login -> %{http_code}\n"
+
+  # Keycloak copies unknown auth-request parameters onto the authentication
+  # session as client notes prefixed client_request_param_; the required action
+  # reads client_request_param_link_pin back out and seeds the field with it.
+  if ! grep -q "value=\"$pin\"" /tmp/step2.html; then
+    echo "FAIL: $label expected the PIN form to be prefilled with '$pin'"
+    grep -oE '<input[^>]*id="pin"[^>]*>' /tmp/step2.html || echo "(no pin input found at all)"
+    exit 1
+  fi
+  echo "PASS: $label (form came back prefilled)"
+  echo
+}
+
+run_case "success" "player-success" "$PC_PIN" "" "$PC_IDENTITY"
+
+# The 1:n proof, and the central behaviour change. The SAME user links a second
+# and third identity: each must be appended, not replace the last. A player on
+# PC, Xbox and PS5 has three Game Identities and one account.
+run_case "second platform appends" "player-success" "$XBOX_PIN" "" "$PC_IDENTITY,$XBOX_IDENTITY"
+run_case "third platform appends" "player-success" "$PSN_PIN" "" "$PC_IDENTITY,$XBOX_IDENTITY,$PSN_IDENTITY"
+
+# The one Keycloak behaviour the whole uniqueness guarantee rests on:
+# searchForUserByUserAttributeStream must match a user by ANY value of a
+# multi-valued attribute, not just the first. Expected -- Keycloak stores each
+# value as its own USER_ATTRIBUTE row -- but load-bearing, so prove it rather
+# than assume it. A 409 from the mint endpoint means the lookup found a holder.
+echo "=== multi-valued attribute lookup (each value must be findable) ==="
+for identity in "$PC_IDENTITY" "$XBOX_IDENTITY" "$PSN_IDENTITY"; do
+  status=$(mint_pin_status "$identity")
+  if [ "$status" != "409" ]; then
+    echo "FAIL: minting for already-held $identity returned $status, expected 409"
+    echo "      (Keycloak did not find the holder by this value of the multi-valued attribute)"
+    exit 1
+  fi
+  echo "PASS: $identity is findable -> 409"
+done
+echo
+
+run_prefill_case "link_pin prefills the form" "player-prefill" "$PREFILL_PIN"
 
 # The rendered feedback text is HTML-escaped (apostrophe becomes &#39;),
 # confirmed by an actual run against a live container -- match the escaped
@@ -267,10 +357,10 @@ run_case "invalid PIN" "player-invalid" "$INVALID_PIN" "isn&#39;t valid"
 # A PIN is single-use: replaying the one the success case just consumed must
 # fail exactly like an unknown PIN. This is the regression test for the
 # consume-once guarantee.
-run_case "replayed PIN" "player-replay" "$SUCCESS_PIN" "isn&#39;t valid"
+run_case "replayed PIN" "player-replay" "$PC_PIN" "isn&#39;t valid"
 
-# Bind CONFLICT_BOHEMIA_ID to one user, then try to bind it to another.
-run_case "conflict setup" "player-conflict-a" "$CONFLICT_PIN" "" "$CONFLICT_BOHEMIA_ID"
+# Bind CONFLICT_IDENTITY to one user, then try to bind it to another.
+run_case "conflict setup" "player-conflict-a" "$CONFLICT_PIN" "" "$CONFLICT_IDENTITY"
 run_case "conflict rejected" "player-conflict-b" "$CONFLICT_PIN_2" "already linked to a different"
 
 echo "=== all cases passed ==="

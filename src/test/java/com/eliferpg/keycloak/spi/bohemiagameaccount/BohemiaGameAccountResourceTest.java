@@ -103,7 +103,7 @@ class BohemiaGameAccountResourceTest {
     void mintPin_alreadyBound_conflictsInsteadOfMintingAUselessPin() {
         UserModel holder = mock(UserModel.class);
         when(holder.getId()).thenReturn("user-2");
-        when(service.findByBohemiaId(session, realm, "BOHEMIA-1")).thenReturn(holder);
+        when(service.findByGameIdentityId(session, realm, "BOHEMIA-1")).thenReturn(holder);
 
         Response response = resource.mintPinInternal(
             realm, auth(TRUSTED, true), body("{\"bohemiaId\":\"BOHEMIA-1\"}"));
@@ -117,7 +117,7 @@ class BohemiaGameAccountResourceTest {
 
     @Test
     void status_unbound_reportsNotLinked() {
-        when(service.findByBohemiaId(session, realm, "BOHEMIA-1")).thenReturn(null);
+        when(service.findByGameIdentityId(session, realm, "BOHEMIA-1")).thenReturn(null);
 
         Response response = resource.statusInternal(realm, auth(TRUSTED, true), "BOHEMIA-1");
 
@@ -129,7 +129,7 @@ class BohemiaGameAccountResourceTest {
     void status_bound_reportsTheKeycloakUserId() {
         UserModel holder = mock(UserModel.class);
         when(holder.getId()).thenReturn("user-2");
-        when(service.findByBohemiaId(session, realm, "BOHEMIA-1")).thenReturn(holder);
+        when(service.findByGameIdentityId(session, realm, "BOHEMIA-1")).thenReturn(holder);
 
         Response response = resource.statusInternal(realm, auth(TRUSTED, true), "BOHEMIA-1");
 
@@ -143,7 +143,7 @@ class BohemiaGameAccountResourceTest {
         Response response = resource.statusInternal(realm, auth("openid profile", false), "BOHEMIA-1");
 
         assertEquals(403, response.getStatus());
-        verify(service, never()).findByBohemiaId(any(), any(), anyString());
+        verify(service, never()).findByGameIdentityId(any(), any(), anyString());
     }
 
     @Test

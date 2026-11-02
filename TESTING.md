@@ -4,7 +4,7 @@
 > **Most of this document is superseded.** It captures the two-user *merge*
 > architecture — `pendingLinkCode` attributes, a `bohemia_*` Keycloak user, a
 > surviving/losing account, `gameAccountLinked` — all of which has been removed.
-> Linking is now a single attribute write (`bohemiaId`) onto the
+> Linking is now an append to a multi-valued attribute (`gameIdentityIds`) onto the
 > already-authenticated user, driven by an application-initiated action.
 >
 > It is kept because its empirical findings still hold and are still cited: the

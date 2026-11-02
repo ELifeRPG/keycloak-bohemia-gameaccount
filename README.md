@@ -1,27 +1,36 @@
 # keycloak-bohemia-gameaccount
 
-A Keycloak extension that binds a player's in-game **Bohemia identity** to their existing
-Keycloak account, for the `eliferpg` realm behind a custom ArmA Reforger mod.
+A Keycloak extension that binds a player's in-game **Game Identities** to their Keycloak
+account, for the `eliferpg` realm behind a custom ArmA Reforger mod.
+
+Arma Reforger mints a **Game Identity per game-platform combination**, so a player on PC,
+Xbox and PS5 has three, and none of them is their Bohemia account. This plugin therefore
+holds them in a **multi-valued** `gameIdentityIds` attribute and **appends** on each link:
+one Keycloak account, any number of game identities.
 
 The player's Keycloak user comes from ordinary web signup — Discord broker or
-username/password — and this plugin never creates one. When an unlinked player joins the
-gameserver, a trusted server-to-server caller mints a short **PIN** through this plugin;
-the game displays it, and the player types it into Keycloak's own login form. On success
-the plugin writes a `bohemiaId` attribute onto the already-authenticated user.
+username/password — and this plugin never creates one. When a player with no linked web
+account joins the gameserver, a trusted server-to-server caller mints a short **PIN**
+through this plugin. The backend puts that PIN straight on a `kc_action` link URL, so the
+player follows the link and finds the form already filled in; they can also type the PIN
+by hand if they reached the form another way.
 
 That is the whole operation: **one user, one attribute write.** No second account, no
 merge, no user deletion. Linking runs entirely against the local Keycloak session — the
 plugin makes no outbound HTTP calls of its own.
 
 ```
-1.  portal signup        →  Keycloak user exists, with no bohemiaId
-2.  player joins         →  backend finds no account for that Bohemia ID,
-                            calls POST …/bohemia-gameaccount/pin
-3.  mod displays the PIN →  player enters it in Keycloak's login form
-4.  this plugin writes bohemiaId onto that user — permanently
+1.  player joins        →  backend creates the account, mints a PIN via
+                           POST …/bohemia-gameaccount/pin, builds a link URL
+2.  mod shows the link  →  …/auth?…&kc_action=link-bohemia-gameaccount&link_pin=<PIN>
+3.  player signs in     →  the form comes up with the PIN already in it
+4.  this plugin appends the Game Identity to gameIdentityIds — permanently
+5.  player joins on another platform → repeat; the new identity is ADDED, not swapped
 ```
 
-Steps 1 and 2 can be days apart. Nothing links them until step 4.
+The player may have signed up on the portal first instead, in which case step 1 is a join
+that finds their existing account. Either order works, and nothing links the two sides
+until step 4.
 
 ## Requirements
 
@@ -99,17 +108,25 @@ This is load-bearing, not incidental. A player who signs up on the portal has no
 the gameserver yet and has no PIN — an action that added itself at login would strand them
 at a prompt they cannot satisfy.
 
-**4. Expose the attribute with a stock protocol mapper.** The plugin writes a `bohemiaId`
-user attribute; map it with `oidc-usermodel-attribute-mapper` (`bohemiaId` → claim
-`bohemia_id`). No custom mapper is needed.
+**4. Expose the attribute with a stock protocol mapper, set to multi-valued.** The plugin
+writes a `gameIdentityIds` user attribute; map it with `oidc-usermodel-attribute-mapper`
+(`gameIdentityIds` → claim `game_identity_ids`) and set **`multivalued: true`**, or the
+claim silently carries only the player's first identity. No custom mapper is needed.
+
+Keycloak stores each value of a multi-valued attribute as its own `USER_ATTRIBUTE` row,
+which is what lets the uniqueness lookup find a user by *any* of their identities. That is
+expected but load-bearing, so `scripts/integration-test.sh` proves it against a live
+instance rather than assuming it.
 
 Keycloak 26's declarative User Profile hides unmanaged attributes from Admin API *reads*,
-so set `unmanagedAttributePolicy` (or declare `bohemiaId` in the profile) if you want to
-inspect it there. The plugin's own write bypasses User Profile and works regardless.
+so set `unmanagedAttributePolicy` (or declare `gameIdentityIds` in the profile) if you want
+to inspect it there. The plugin's own write bypasses User Profile and works regardless.
 
 **5. Never grant `accounts:bohemia-gameaccount:manage` to a public or user-facing client.**
-It permits minting a PIN for an arbitrary `bohemiaId`, which is enough to claim someone
-else's game identity. Grant it only to confidential, service-account-enabled clients.
+It permits minting a PIN for an arbitrary Game Identity ID, which is enough to claim
+someone else's game identity. Grant it only to confidential, service-account-enabled
+clients. The same reasoning applies to the link URL itself: a `link_pin` is a bearer
+credential for one game identity until it is consumed or expires.
 
 ## REST API
 
@@ -132,8 +149,13 @@ to their account outside the login flow.
 
 ### `POST …/pin`
 
-Mints a PIN for a Bohemia ID no Keycloak user is bound to yet.
+Mints a PIN for a Game Identity ID no Keycloak user holds yet.
 Request body: `{ "bohemiaId": "<id>" }`.
+
+> The request field and the URL path still say `bohemia`. This is the trusted wire between
+> the backend and this provider, not the public API (where the rename to `gameIdentityId`
+> has already happened), and the deployed backend sends this name. It changes when the
+> backend changes it, not before.
 
 ```
 200  { "pin": "<the PIN>", "expiresInSeconds": 1800 }
@@ -143,12 +165,14 @@ Request body: `{ "bohemiaId": "<id>" }`.
 ```
 
 The `409` is the first line of defence against binding one game identity to two accounts:
-once a `bohemiaId` is bound, minting for it is refused.
+once a Game Identity ID is held by any user, minting for it is refused. Note this is
+per *identity*, not per user — a player who already linked their PC identity still gets a
+PIN for their Xbox one.
 
 ### `GET …/status`
 
-Resolves whether a Bohemia ID is bound, and to whom — so a backend can map
-`bohemiaId` → Keycloak user without being granted `realm-management: view-users`.
+Resolves whether a Game Identity ID is held, and by whom — so a backend can map a game
+identity → Keycloak user without being granted `realm-management: view-users`.
 
 ```
 200  { "linked": false }
@@ -161,13 +185,13 @@ Resolves whether a Bohemia ID is bound, and to whom — so a backend can map
 
 A PIN is minted **when an unlinked player joins the gameserver**, and the TTL starts
 there. It does not have to span the gap between portal signup and first join, which may be
-days — that gap is bridged by the permanent `bohemiaId` attribute, and no PIN exists
+days — that gap is bridged by the permanent `gameIdentityIds` attribute, and no PIN exists
 during it. Every join by a still-unlinked player mints a fresh one; they are independent
 single-use keys, so several can be live at once without conflicting, and unconsumed ones
 simply expire.
 
 A caller cannot mint a PIN on a player's behalf from the portal side, by design: for an
-unlinked player there is no way to know which Bohemia ID they are. The PIN flows
+unlinked player there is no way to know which Game Identity they are. The PIN flows
 game → player → portal, never the other way.
 
 PINs live in Keycloak's `SingleUseObjectProvider` with a **1800s (30 minute)** TTL, never
@@ -211,10 +235,19 @@ the plugin at that tag's version — tag `v0.2.0` yields
 `mvn verify` runs the unit tests. Two local stacks cover the rest:
 
 **`./scripts/integration-test.sh`** — headless end-to-end regression run. Builds the
-provider image, drives five cases via curl, asserts on each, and tears itself down:
-success (asserting the `bohemiaId` attribute actually persisted, not merely that a page
-rendered), invalid PIN, replayed PIN (the consume-once guarantee), conflict setup, and
-conflict rejected.
+provider image, drives the cases below via curl, asserts on each, and tears itself down:
+
+- **success** — asserts the `gameIdentityIds` attribute actually persisted, not merely that
+  a page rendered
+- **second and third platform append** — the 1:n proof. The same user links three
+  identities and must end up holding all three, in order
+- **multi-valued lookup** — each of those three values must be findable on its own, so a
+  mint for any of them is refused with `409`. This is the one Keycloak behaviour the
+  uniqueness guarantee rests on, proven rather than assumed
+- **`link_pin` prefills the form** — the PIN on the `kc_action` URL arrives as the
+  `client_request_param_link_pin` client note and comes back in the rendered field
+- **invalid PIN**, **replayed PIN** (the consume-once guarantee), **conflict setup** and
+  **conflict rejected**
 
 > The explicit `docker build` step is required: `docker-compose.integration-test.yml` pins
 > a prebuilt `:dev` image rather than a build context, so `up --build` is a no-op for it.
@@ -222,7 +255,7 @@ conflict rejected.
 
 **`./scripts/local-dev-up.sh`** — click-through stack for manual testing. Starts Keycloak
 with the provider loaded and bootstraps a realm, a browser client, a test user, a
-confidential service-account client holding the trusted scope, and the `bohemia_id`
+confidential service-account client holding the trusted scope, and the `game_identity_ids`
 protocol mapper. It mints a demo PIN through the real endpoint rather than faking one, and
 leaves the stack running, printing two URLs: a plain login (which completes without
 prompting, showing the action does not interrupt on its own) and the same login plus

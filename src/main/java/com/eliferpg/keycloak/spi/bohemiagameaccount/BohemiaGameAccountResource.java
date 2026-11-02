@@ -22,7 +22,7 @@ import java.io.InputStream;
 import java.util.Map;
 
 /**
- * Server-to-server surface for Bohemia game account linking.
+ * Server-to-server surface for game account linking.
  *
  * <p>Both endpoints are trusted-caller only. There is deliberately no self-service
  * redemption endpoint: a player redeems a PIN by typing it into Keycloak's own form
@@ -46,7 +46,7 @@ public class BohemiaGameAccountResource implements RealmResourceProvider {
         return this;
     }
 
-    /** Mints a PIN for a Bohemia ID that has no Keycloak user bound to it yet. */
+    /** Mints a PIN for a Game Identity ID that no Keycloak user holds yet. */
     @POST
     @Path("pin")
     @Consumes(MediaType.APPLICATION_JSON)
@@ -59,7 +59,7 @@ public class BohemiaGameAccountResource implements RealmResourceProvider {
         return mintPinInternal(session.getContext().getRealm(), auth, readJson(body));
     }
 
-    /** Resolves whether a Bohemia ID is already bound, and to which Keycloak user. */
+    /** Resolves whether a Game Identity ID is already held, and by which Keycloak user. */
     @GET
     @Path("status")
     @Produces(MediaType.APPLICATION_JSON)
@@ -75,19 +75,19 @@ public class BohemiaGameAccountResource implements RealmResourceProvider {
         if (!hasTrustedScope(auth)) {
             return errorResponse(Response.Status.FORBIDDEN, "trusted scope required");
         }
-        String bohemiaId = readBohemiaId(body);
-        if (bohemiaId == null) {
+        String gameIdentityId = readGameIdentityId(body);
+        if (gameIdentityId == null) {
             return errorResponse(Response.Status.BAD_REQUEST, "bohemiaId required");
         }
 
-        UserModel existing = service.findByBohemiaId(session, realm, bohemiaId);
+        UserModel existing = service.findByGameIdentityId(session, realm, gameIdentityId);
         if (existing != null) {
             return Response.status(Response.Status.CONFLICT)
                 .entity(Map.of("error", "already-linked", "keycloakUserId", existing.getId()))
                 .build();
         }
 
-        String pin = service.mintPin(session, bohemiaId);
+        String pin = service.mintPin(session, gameIdentityId);
         return Response.ok(Map.of("pin", pin, "expiresInSeconds", BohemiaGameAccountService.PIN_TTL_SECONDS)).build();
     }
 
@@ -99,19 +99,27 @@ public class BohemiaGameAccountResource implements RealmResourceProvider {
             return errorResponse(Response.Status.BAD_REQUEST, "bohemiaId required");
         }
 
-        UserModel user = service.findByBohemiaId(session, realm, bohemiaId.trim());
+        UserModel user = service.findByGameIdentityId(session, realm, bohemiaId.trim());
         if (user == null) {
             return Response.ok(Map.of("linked", false)).build();
         }
         return Response.ok(Map.of("linked", true, "keycloakUserId", user.getId())).build();
     }
 
-    private String readBohemiaId(JsonNode body) {
+    /**
+     * The request field is still {@code bohemiaId} although the value is a Game Identity ID.
+     *
+     * <p>This is a trusted server-to-server wire between the backend and this provider -- it is not
+     * the public API, where the rename to {@code gameIdentityId} has already happened. Renaming it
+     * here would break the deployed backend the moment this provider ships, for no player-visible
+     * gain, so it is changed when the backend changes it, not before.
+     */
+    private String readGameIdentityId(JsonNode body) {
         if (body == null) {
             return null;
         }
-        String bohemiaId = body.path("bohemiaId").asText(null);
-        return bohemiaId == null || bohemiaId.isBlank() ? null : bohemiaId.trim();
+        String gameIdentityId = body.path("bohemiaId").asText(null);
+        return gameIdentityId == null || gameIdentityId.isBlank() ? null : gameIdentityId.trim();
     }
 
     private AuthenticationManager.AuthResult authenticate() {

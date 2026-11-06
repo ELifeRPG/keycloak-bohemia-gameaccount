@@ -281,3 +281,15 @@ Keycloak **26.0.8** specifically (`keycloak.version` in `pom.xml`).
 
 Any Keycloak upgrade requires rebuilding and re-verifying this plugin against the new
 version first — forward compatibility is not safe to assume.
+
+## License
+
+Copyright © 2026 ELifeRPG contributors.
+
+Licensed under the [GNU Affero General Public License v3.0 or later](LICENSE)
+(`AGPL-3.0-or-later`). You may use, change and share this software. If you
+distribute it, or run a modified version for other people over a network
+(for example, a game server), you must make your complete source code
+available to those users under the same license.
+
+Contributions need a DCO sign-off; see [CONTRIBUTING.md](CONTRIBUTING.md).
